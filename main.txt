@@ -1,0 +1,243 @@
+import re
+import requests
+import os
+import sys
+import uuid
+import logging
+import shutil
+
+# import time
+# import random
+
+# --- 配置 ---
+YUQUE_CDN_DOMAIN = 'cdn.nlark.com'  # 语雀CDN域名，目前未使用，但保留。
+IMAGE_DIR_SUFFIX = '_images'  # 统一的图片目录后缀，例如 'mydoc_images'
+IMAGE_FILE_PREFIX = 'image-'  # 如果使用 'asc' 命名模式，图片文件的前缀
+LOG_FILE_NAME = 'yuque_processor.log'  # 日志文件名
+
+# 外部图片URL前缀，如果图片URL以这些前缀开头，则跳过下载。
+# 主要用于处理已经本地化或不需要处理的链接。
+EXTERNAL_IMAGE_PREFIXES_TO_SKIP = [
+    './',  # 已是相对路径的本地图片，跳过
+    '../',  # 已是相对路径的本地图片，跳过
+    'http://localhost',  # 本地服务器图片，跳过
+    'https://example.com/my-internal-images/'  # 可添加其他你希望跳过的内部图片前缀
+]
+
+
+# --- 日志配置 ---
+def setup_logging(log_file):
+    """
+    配置日志系统，将日志同时输出到文件和控制台。
+    """
+    logging.basicConfig(level=logging.INFO,  # 设置日志级别为INFO
+                        format='%(asctime)s - %(levelname)s - %(message)s',  # 日志格式
+                        handlers=[
+                            logging.FileHandler(log_file, encoding='utf-8'),  # 输出到文件，指定编码
+                            logging.StreamHandler(sys.stdout)  # 输出到控制台
+                        ])
+
+
+# --- 核心功能 ---
+def deal_yuque(md_file_path, image_dir_for_current_md, image_url_prefix_for_current_md,
+               image_rename_mode):
+    """
+    处理单个Markdown文件，下载外部图片并更新其链接。
+    对于看起来已是本地图片（根据 EXTERNAL_IMAGE_PREFIXES_TO_SKIP 定义）的URL将跳过下载。
+    此函数会直接修改传入的 md_file_path 文件。
+    """
+    idx = 0  # 'asc' 命名模式的计数器
+    output_content = []  # 存储新Markdown文件的内容
+
+    logging.info(f"正在处理 Markdown 文件: {md_file_path}")
+
+    # 在处理文件前确保图片目录存在
+    os.makedirs(image_dir_for_current_md, exist_ok=True)
+    logging.info(f"已确保图片目录存在: {image_dir_for_current_md}")
+
+    # 用于匹配图片URL的更严格的正则表达式
+    # 匹配以 http/https 开头，以 .png/.jpeg/.jpg/.gif 结尾的URL，并且不包含 '!' 符号
+    # 避免匹配到 'url1!url2' 这种错误格式
+    image_url_regex = re.compile(
+        r'(http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+'
+        r'\.(png|jpeg|jpg|gif))\b'  # 确保匹配到文件扩展名，并以单词边界结束
+    )
+
+    with open(md_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line_num, line in enumerate(f.readlines()):
+            # 移除语雀特有的PNG哈希后缀
+            processed_line = re.sub(r'png#(.*)+', 'png)', line)
+
+            # 使用更严格的正则表达式查找图片URL
+            # 这里我们查找的是括号或方括号中包裹的URL，因为Markdown链接通常是这种格式
+            # 但为了兼容性，我们仍然使用finditer来处理一行中可能有多个URL的情况
+            matches = list(image_url_regex.finditer(processed_line))
+
+            # 由于 re.findall 可能会有误报，这里我们遍历找到的匹配项并进行更精准的替换
+            # 我们需要从后向前替换，以避免索引错乱
+            for match in reversed(matches):
+                image_url = match.group(1)  # 获取匹配到的完整URL，例如 https://...test.png
+
+                # 检查URL是否为图片链接，并且不是需要跳过的内部/本地链接
+                if any(ext in image_url.lower() for ext in ['.png', '.jpeg', '.jpg', '.gif']):  # 统一转小写比较
+                    if any(image_url.startswith(prefix) for prefix in EXTERNAL_IMAGE_PREFIXES_TO_SKIP):
+                        logging.info(f"  跳过已是本地/内部的图片URL (根据前缀判断): {image_url}")
+                        # 这种情况不需要修改 processed_line，因为它被认为是外部已处理的
+                        continue  # 处理下一个匹配项或下一行
+
+                    # 提取文件后缀
+                    suffix = ''
+                    if '.png' in image_url.lower():
+                        suffix = '.png'
+                    elif '.jpeg' in image_url.lower():
+                        suffix = '.jpeg'
+                    elif '.jpg' in image_url.lower():
+                        suffix = '.jpg'
+                    elif '.gif' in image_url.lower():
+                        suffix = '.gif'
+
+                    # 根据命名模式确定新的图片文件名
+                    new_image_name = ""
+                    if image_rename_mode == 'uuid':
+                        new_image_name = str(uuid.uuid4()) + suffix
+                    elif image_rename_mode == 'asc':
+                        new_image_name = IMAGE_FILE_PREFIX + str(idx) + suffix
+                    else:  # 'original' 或其他，使用原始文件名
+                        # 从URL中提取文件名，去除查询参数
+                        original_name_from_url = image_url.split('/')[-1].split('?')[0]
+                        # 确保文件名包含正确的后缀
+                        if not original_name_from_url.lower().endswith(suffix.lower()):
+                            new_image_name = original_name_from_url + suffix
+                        else:
+                            new_image_name = original_name_from_url
+
+                    image_local_path = os.path.join(image_dir_for_current_md, new_image_name)
+
+                    # 仅当图片在本地不存在时才进行下载
+                    if not os.path.exists(image_local_path):
+                        logging.info(f"  检测到新图片，尝试下载: {image_url}")
+                        download_success = download_image(image_url, image_dir_for_current_md, new_image_name)
+                        if download_success:
+                            # 构建Markdown文件中新的相对URL
+                            new_image_relative_url = os.path.join(image_url_prefix_for_current_md,
+                                                                  new_image_name).replace('\\', '/')
+                            # 替换当前行中的旧URL
+                            processed_line = processed_line[:match.start(1)] + new_image_relative_url + processed_line[
+                                                                                                        match.end(1):]
+                            idx += 1  # 仅在成功下载新图片时增加计数器（用于'asc'模式）
+                        else:
+                            logging.warning(
+                                f"  图片下载失败：{image_url}。Markdown文件中（第 {line_num + 1} 行）的链接将**不会**更新。"
+                            )
+                    else:
+                        logging.info(f"  图片已存在本地，跳过下载: {image_local_path}")
+                        # 即使图片已存在，也要更新链接以确保与新命名方案保持一致
+                        new_image_relative_url = os.path.join(image_url_prefix_for_current_md, new_image_name).replace(
+                            '\\', '/')
+                        # 替换当前行中的旧URL
+                        processed_line = processed_line[:match.start(1)] + new_image_relative_url + processed_line[
+                                                                                                    match.end(1):]
+
+            output_content.append(processed_line)  # 添加可能已修改的行或原始行
+
+    # 将处理后的内容写回原始文件
+    with open(md_file_path, 'w', encoding='utf-8', errors='ignore') as f:
+        for _output_content in output_content:
+            f.write(str(_output_content))
+    logging.info(f"完成处理并写回文件: {md_file_path}")
+    return idx  # 返回当前文件新下载的图片数量
+
+
+def download_image(image_url, image_dir, image_name):
+    """
+    将图片下载到指定目录，并使用指定名称保存。
+    已移除随机延迟，以最高效率执行。
+    """
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+    }
+
+    # ！！已移除随机延迟，追求最高下载效率！！
+
+    try:
+        r = requests.get(image_url, stream=True, timeout=15, headers=headers)  # 增加超时时间
+        if r.status_code == 200:
+            image_path = os.path.join(image_dir, image_name)
+            with open(image_path, 'wb') as f:
+                r.raw.decode_content = True  # 确保正确解码压缩数据
+                shutil.copyfileobj(r.raw, f)  # 更高效地写入文件
+            logging.info(f"  已下载图片: {image_path}")
+            return True
+        else:
+            logging.error(f"  下载 {image_url} 失败: 状态码 {r.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        logging.error(f"  下载 {image_url} 时出错: {e}")
+        return False
+    finally:
+        if 'r' in locals() and r:  # 确保请求对象存在且已关闭
+            r.close()
+
+
+def process_target_directory(target_root_path, image_rename_mode):
+    """
+    遍历指定目录，处理其中的所有Markdown文件。
+    """
+    logging.info(f"开始扫描并处理目录: {target_root_path}")
+    processed_files_count = 0
+    total_images_downloaded = 0
+
+    for dirpath, dirnames, filenames in os.walk(target_root_path):
+        for f in filenames:
+            if f.endswith('.md'):
+                md_file_path = os.path.join(dirpath, f)
+
+                # 图片目录名将基于Markdown文件名
+                md_name_without_ext = os.path.splitext(f)[0]
+
+                # 当前Markdown文件对应的图片目录
+                image_dir_for_current_md = os.path.join(dirpath, md_name_without_ext + IMAGE_DIR_SUFFIX)
+
+                # Markdown文件中图片的相对URL前缀
+                image_url_prefix_for_current_md = f'./{md_name_without_ext}{IMAGE_DIR_SUFFIX}/'
+
+                try:
+                    cnt = deal_yuque(md_file_path,
+                                     image_dir_for_current_md,
+                                     image_url_prefix_for_current_md,
+                                     image_rename_mode)
+                    logging.info(f'文件 "{f}" 处理完成。新下载了 {cnt} 张图片。图片保存在: "{image_dir_for_current_md}"')
+                    total_images_downloaded += cnt
+                    processed_files_count += 1
+                except Exception as e:
+                    logging.error(f"处理文件 {md_file_path} 时发生错误: {e}")
+
+    logging.info(f"\n--- 所有文件处理完毕 ---")
+    logging.info(f"共处理 {processed_files_count} 个 Markdown 文件。")
+    logging.info(f"共下载 {total_images_downloaded} 张新图片。")
+
+
+# --- 主程序入口 ---
+def main():
+    # *** 警告：此路径下的文件将被直接修改！请务必提前备份！ ***
+    target_root_path = 'C:/Users/wgl/Desktop/YuQueTest'  # <<< 在这里设置你的目标目录 >>>
+
+    # 'original' 表示使用原始文件名（推荐，方便续传）
+    # 'uuid' 表示使用UUID命名
+    # 'asc' 表示递增数字 (image-0, image-1...)
+    image_rename_mode = 'original'  # <<< 推荐设置为 'original' 来实现续传和本地图片识别 >>>
+
+    # 确保目标根目录存在，以便日志文件可以创建
+    os.makedirs(target_root_path, exist_ok=True)
+    setup_logging(os.path.join(target_root_path, LOG_FILE_NAME))
+
+    logging.info("启动语雀 Markdown 文件处理器 (原地修改模式)。")
+    logging.info(f"目标处理目录: {target_root_path}")
+    logging.info(f"图片命名模式: {image_rename_mode}")
+    logging.warning("注意：脚本将以最高效率运行，不添加任何延迟，这可能增加被服务器限流的风险。")
+
+    process_target_directory(target_root_path, image_rename_mode)
+
+
+if __name__ == '__main__':
+    main()
