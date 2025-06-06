@@ -230,8 +230,7 @@ def process_target_directory_multithreaded(target_root_path, image_rename_mode, 
 
 # --- 主程序入口 ---
 def main():
-    # *** 警告：此路径下的文件将被直接修改！请务必提前备份！ ***
-    target_root_path = 'C:/Users/wgl/Desktop/YuQueTest'
+    target_root_path = 'C:/xxx'
 
     image_rename_mode = 'original'
 

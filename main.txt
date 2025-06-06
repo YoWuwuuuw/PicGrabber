@@ -1,3 +1,5 @@
+# 这是单线程版本，存档
+
 import re
 import requests
 import os
@@ -15,13 +17,12 @@ IMAGE_DIR_SUFFIX = '_images'  # 统一的图片目录后缀，例如 'mydoc_imag
 IMAGE_FILE_PREFIX = 'image-'  # 如果使用 'asc' 命名模式，图片文件的前缀
 LOG_FILE_NAME = 'yuque_processor.log'  # 日志文件名
 
-# 外部图片URL前缀，如果图片URL以这些前缀开头，则跳过下载。
-# 主要用于处理已经本地化或不需要处理的链接。
+# 外部图片URL前缀，如果图片URL以这些前缀开头，则跳过下载，主要用于处理已经本地化或不需要处理的链接
 EXTERNAL_IMAGE_PREFIXES_TO_SKIP = [
     './',  # 已是相对路径的本地图片，跳过
     '../',  # 已是相对路径的本地图片，跳过
     'http://localhost',  # 本地服务器图片，跳过
-    'https://example.com/my-internal-images/'  # 可添加其他你希望跳过的内部图片前缀
+    'https://example.com/my-internal-images/'  # 可添加其他希望跳过的内部图片前缀
 ]
 
 
@@ -157,8 +158,6 @@ def download_image(image_url, image_dir, image_name):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
     }
 
-    # ！！已移除随机延迟，追求最高下载效率！！
-
     try:
         r = requests.get(image_url, stream=True, timeout=15, headers=headers)  # 增加超时时间
         if r.status_code == 200:
@@ -219,13 +218,12 @@ def process_target_directory(target_root_path, image_rename_mode):
 
 # --- 主程序入口 ---
 def main():
-    # *** 警告：此路径下的文件将被直接修改！请务必提前备份！ ***
-    target_root_path = 'C:/Users/wgl/Desktop/YuQueTest'  # <<< 在这里设置你的目标目录 >>>
+    target_root_path = 'C:/Users/xxx'  # <<< 在这里设置你的目标目录 >>>
 
     # 'original' 表示使用原始文件名（推荐，方便续传）
-    # 'uuid' 表示使用UUID命名
+    # 'uuid' 表示使用UUID命名（推荐，方便续传）
     # 'asc' 表示递增数字 (image-0, image-1...)
-    image_rename_mode = 'original'  # <<< 推荐设置为 'original' 来实现续传和本地图片识别 >>>
+    image_rename_mode = 'original'
 
     # 确保目标根目录存在，以便日志文件可以创建
     os.makedirs(target_root_path, exist_ok=True)
